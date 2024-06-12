@@ -2,9 +2,12 @@ import os
 import glob
 import shutil
 import zipfile
+import subprocess
 import numpy as np
 import pandas as pd
 from scipy.stats import chi2
+from sklearn.base import TransformerMixin
+from sklearn.feature_extraction.text import CountVectorizer
 from statsmodels.stats.proportion import proportion_confint as prop_CI
 
 def makeifnot(path):
@@ -40,6 +43,29 @@ def remove_path(path: str) -> None:
         print(f"Removed directory: {path}")
     else:
         print(f"No such file or directory: {path}")
+
+
+def find_string_columns(df:pd.DataFrame) -> list:
+    """Wrapper to find the string/categorical columns of a dataframe"""
+    assert isinstance(df, pd.DataFrame)
+    dt = df.dtypes
+    idx_object = dt == 'object'
+    idx_category = dt == 'category'
+    idx = idx_object | idx_category
+    cols_strings = list(df.columns[idx])
+    return cols_strings
+
+
+def find_numeric_columns(df:pd.DataFrame) -> list:
+    """Wrapper to find the float/integer columns of a dataframe"""
+    assert isinstance(df, pd.DataFrame)
+    dt = df.dtypes
+    idx_int = dt == 'int'
+    idx_float = dt == 'float'
+    idx = idx_int | idx_float
+    cols_numbers = list(df.columns[idx])
+    return cols_numbers
+
 
 
 def ret_prod_df(di: dict) -> pd.DataFrame:
@@ -87,6 +113,69 @@ def add_binom_CI(df:pd.DataFrame, cn_den:str, cn_pct:None | str=None, cn_num:Non
     assert np.all( (res['lb'] <= pct_success) & (res['ub'] >= pct_success) ), 'Woops! [lb,ub] do not bracket the percent of successes!'
     return res
 
+
+
+def is_column_a_combination(matrix):
+    n_rows, n_cols = matrix.shape
+    for i in range(n_cols):
+        # Extract the i-th column
+        b = matrix[:, i]
+        # Create matrix A_{-i} by excluding the i-th column
+        A_minus_i = np.delete(matrix, i, axis=1)
+        # Try to solve A_{-i}x = b
+        try:
+            # np.linalg.lstsq returns the least-squares solution to the equation
+            x, residuals, rank, s = np.linalg.lstsq(A_minus_i, b, rcond=None)
+            # If residuals is empty, it means an exact solution exists
+            if residuals.size == 0 or np.allclose(A_minus_i @ x, b):
+                return True
+        except np.linalg.LinAlgError:
+            # This error is raised when A_minus_i is not full rank
+            continue
+    return False
+
+
+def try_command_line(stmt: str) -> None:
+    """See if you can run something in the command line"""
+    works = True
+    try:
+        subprocess.run([stmt], capture_output=True, text=True)
+    except:
+        works = False
+    assert works, f'woops, {stmt} did not run in the command line'
+
+
+class FrameCountVectorizer(TransformerMixin):
+    fillna_val = 'missing'
+
+    def __init__(self, **params):
+        # Initialize the CountVectorizer with any parameters
+        self.vectorizers = {}
+        self.params = params
+    
+    def fit(self, X:pd.DataFrame, y=None):
+        # Create a CountVectorizer for each column in the DataFrame
+        for column in X.columns:
+            vectorizer = CountVectorizer(**self.params)
+            vectorizer.fit(X[column].fillna(self.fillna_val))
+            self.vectorizers[column] = vectorizer
+        return self
+
+    def transform(self, X):
+        # Apply the appropriate CountVectorizer to each column and convert to dense array
+        result = []
+        for column, vectorizer in self.vectorizers.items():
+            column_result = vectorizer.transform(X[column].fillna(self.fillna_val))
+            result.append(column_result.toarray())
+        
+        # Concatenate the results along axis 1 (columns)
+        result = np.hstack(result)
+        return result
+
+    def fit_transform(self, X, y=None):
+        # Combine fit and transform for efficiency
+        self.fit(X, y)
+        return self.transform(X)
 
 
 class ScaledChi2:

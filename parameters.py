@@ -26,6 +26,21 @@ seed = 1234
 nsim_plots = 100000
 atol_figs = 0.01    # Comparing simulation means to theory
 
+# 0_datasets
+path_url_age = 'https://raw.githubusercontent.com/Moradnejad/AgeDataset/main/AgeDataset.rar'
+path_raw_age = os.path.join(dir_data, 'AgeDataset.csv')
+path_clean_age = os.path.join(dir_data, 'tidy_age.csv')
+colname_y_age = 'death_age'
+colname_x_age = ['gender', 'country', 'birth_year', 'occupation', 'death_manner']
+di_rename_age = {'Gender':'gender', 
+             'Country': 'country', 
+             'Birth year': 'birth_year', 
+             'Occupation': 'occupation', 
+             'Age of death': 'death_age',
+             'Death year': 'death_year',
+             'Manner of death': 'death_manner'}
+
+
 # 1_simulations parameters
 nsim_sims = 500000
 mu_sims = 0.9
@@ -39,7 +54,8 @@ sigma_n = (sigma2_sims / n_sims)**0.5
 theta_high_sims = mu_sims + k_sims*sigma_n
 theta_low_sims = mu_sims - k_sims*sigma_n
 
-# 2_regression
+
+# 3_regression
 nsim_regression = 10000
 verbose_regression = True
 alphas = [0.0, 0.50, 1.0]
@@ -67,3 +83,7 @@ di_metrics = {
     'mse':'MSE', 
     'mae':'MAE'
 }
+
+
+# 4_rwd
+num_cat_min = 10  # For one-hot encoding, minimum number of values we'll need to see
