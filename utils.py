@@ -33,6 +33,19 @@ def unzip_folder(folder: str, wildcard: str = '*.zip'):
         os.remove(zip_filename)  # Remove the zip file after extracting
 
 
+def select_k_vals_m_times(x: np.ndarray, k: int, m: int) -> np.ndarray:
+    """
+    Returns an (m, k) array where each row is a random selection of k values from an array x
+    """
+    assert len(x.shape) == 1, 'make sure x is a flat array'
+    n = len(x)
+    assert k < n, f'x is length {n}, make sure {k} is less than that'
+    res = np.zeros(shape = (m, k))
+    for i in range(m):
+        res[i] = x[np.random.choice(n, k)]
+    return res
+
+
 def remove_path(path: str) -> None:
     """Remove a file or directory at the given path."""
     if os.path.isfile(path):

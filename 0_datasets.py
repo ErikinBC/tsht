@@ -41,7 +41,7 @@ else:
 
 
 # (ii) Load and rename
-df_age = pd.read_csv(path_raw_age, nrows=10000)
+df_age = pd.read_csv(path_raw_age)
 df_age.rename(columns=di_rename_age, inplace=True)
 
 # (iii) Check that missing age of death is always for missing death year
@@ -51,14 +51,14 @@ assert df_age.loc[df_age['death_year'].isnull(), 'death_age'].isnull().all()
 # (iv) Keep only non-missing rows
 n_age_before = df_age.shape[0]
 df_age = df_age[df_age['death_age'].notnull()].reset_index(drop=True)
-print(f'After removing null values there are {len(df_age):,} rows for the Age dataset (from {n_age_before})')
+print(f'After removing null values there are {len(df_age):,} rows for the Age dataset (from {n_age_before:,})')
 
 # (v) Drop non-relevant columns
 df_age = df_age[[colname_y_age] + colname_x_age]
 df_age.rename(columns = {colname_y_age:'y'}, inplace=True)
 
 # (vi) Log-scale the response (more likely to be normal)
-df_age['y'] = np.log(df_age['y'])
+df_age['y'] = np.log(df_age['y'] + 1)
 
 # (vii) Save for later
 df_age.to_csv(path_clean_age, index=False)
