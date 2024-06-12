@@ -87,6 +87,7 @@ di_metrics = {
 
 # 4_rwd
 num_cat_min = 10  # For one-hot encoding, minimum number of values we'll need to see
+m_sim = 1000
 n_train_age = 5000
-n_test_age = 5001
+n_test_age = 111115
 n_trial_age = 5002
