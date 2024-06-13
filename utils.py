@@ -46,6 +46,46 @@ def select_k_vals_m_times(x: np.ndarray, k: int, m: int) -> np.ndarray:
     return res
 
 
+def calculate_summary_stats(x: np.ndarray, 
+                            alpha:float = 0.25, 
+                            colnames: list | None = None, 
+                            idxnames: list | None = None,
+                            var_name: str | None = None, 
+                            value_name: str | None = None
+                            ) -> pd.DataFrame:
+    """
+    For some (m, n, p) array, calculate the mean, IQR, and SD over dimensions (n, p)
+
+    Args
+    ====
+    x: np.ndarray
+        The (m, n, p) array
+    alpha: float = 0.5
+        For the lb=alpha, ub=1-alpha quantile
+    colnames: list | None = None
+        The names of the (p, ) dimensions
+    idxnames: list | None = None
+        The names of the (n, ) dimensions
+    var_name: str | None = None
+        What to call the (p, ) dimension
+    value_name: str | None = None
+        What to call the (n,) dimension
+    """
+    assert len(x.shape) == 3
+    di_frames = {'mu': x.mean(axis = 0),
+                 'sd': x.std(axis = 0, ddof=1),
+                 'lb': np.quantile(x, alpha, axis=0), 
+                 'ub': np.quantile(x, 1-alpha, axis=0)
+                 }
+    for k, v in di_frames.items():
+        df = pd.DataFrame(v, columns=colnames, index=idxnames)
+        df = df.melt(ignore_index=False, var_name=var_name).rename_axis(value_name).reset_index()
+        df.rename(columns = {'value':k}, inplace=True)
+        di_frames[k] = df
+    df_frames = pd.concat([q.set_index(['lamb', 'n']) for q in di_frames.values()], axis=1).reset_index()
+    return df_frames
+
+
 def remove_path(path: str) -> None:
     """Remove a file or directory at the given path."""
     if os.path.isfile(path):

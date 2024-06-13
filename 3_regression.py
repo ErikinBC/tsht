@@ -73,8 +73,7 @@ for i in range(nsim_regression):
     yy_test_i, xx_test_i = yy_i[idx_test], xx_i[idx_test]
     yy_trial_i, xx_trial_i = yy_i[idx_trial], xx_i[idx_trial]
     
-    # (iii) Fit the preprocessor and model
-    # mdl.fit_preprocessor(X = xx_train_i)
+    # (iii) Fit model
     mdl.fit(X = xx_train_i, y = yy_train_i, verbose=False)
     # Calculate the risk for a given coefficient
     beta_hat = np.concatenate( ([mdl.model.intercept_], mdl.model.coef_))
