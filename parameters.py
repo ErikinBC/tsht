@@ -74,6 +74,7 @@ di_elnet = {'n_lambda': 25,
             'min_lambda_ratio': 1e-3, 
             'n_splits': 3,
             'scoring': 'r2'}
+# The different residual functions
 di_resid_fun = {
     'mse': lambda y, ypred: (y - ypred)**2, 
     'mae': lambda y, ypred: np.abs(y - ypred), 

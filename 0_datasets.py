@@ -63,8 +63,3 @@ df_age['y'] = np.log(df_age['y'] + 1)
 # (vii) Save for later
 df_age.to_csv(path_clean_age, index=False)
 
-# df_age['country'].str.split('; ',regex=False).explode().str.contains(';',regex=False).any()
-# df_age['occupation'].str.split('; ',regex=False).explode().str.contains(';',regex=False).any()
-# df_age['death_manner'].str.split('; ',regex=False).explode().str.contains(';',regex=False).any()
-
-

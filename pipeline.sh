@@ -5,14 +5,20 @@
 # Runs the scripts
 conda activate tsht
 
-# --- (1) Run the simulations --- #
-python3 -W ignore::RuntimeWarning 1_simulations.py
+# # --- (0) Preliminary: generate RWD --- #
+# python3 0_datasets.py
 
-# --- (2) Generate additional figures --- #
-python3 2_extra_figs.py
+# # --- (1) Run the simulations --- #
+# python3 -W ignore::RuntimeWarning 1_simulations.py
 
-# --- (3) Run the regression simulations --- #
-python3 3_regression.py
+# # --- (2) Generate additional figures --- #
+# python3 2_extra_figs.py
+
+# --- (3) Run the regression simulation (fake data) --- #
+python3 3_regression_sim.py
+
+# # --- (4) Run the regression simulation (real data) --- #
+# python3 4_regression_rwd.py
 
 
 

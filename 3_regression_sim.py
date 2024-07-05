@@ -1,7 +1,7 @@
 """
 Uses two real-world regression datasets to test the TSHT approach
 
-python3 3_regression.py
+python3 3_regression_sim.py
 """
 
 # Load modules
@@ -9,7 +9,8 @@ import numpy as np
 import pandas as pd
 import plotnine as pn
 from time import time
-from scipy.stats import binomtest, norm
+from scipy.stats import norm
+from debiased_sd.estimators import std, valid_std_methods
 # Internal
 from sntn.dists import nts
 from funs_models import elnet_wrapper
@@ -49,20 +50,27 @@ data_generator = dgp_sparse_yX(s = s,
 ##################################
 # --- (2) RUN THE SIMULATION --- #
 
+"""
+TO-DOS
+i) ADD STD FROM ORACLE (STORE: TRIAL, TRIAL, ORACLE)
+ii) PARAMETRIZE FOR DIFFERENT NTEST/NTRIAL
+iii) FEWER OVERALL SIMULATIONS...
+"""
+
 # Total samples to split
 n = n_train + n_test + m_trial
 # Variance will be constant
 tau22 = m_trial / n_test
 
 # Run simulation loop
+i_train = n_train
+i_test = n_train+n_test
+i_trial = n_train+n_test+m_trial
 holder_loop = []
 stime = time()
 for i in range(nsim_regression):
     # (i) Index the different splits
     indices = np.random.permutation(n)
-    i_train = n_train
-    i_test = n_train+n_test
-    i_trial = n_train+n_test+m_trial
     idx_train = indices[:i_train]
     idx_test = indices[i_train:i_test]
     idx_trial = indices[i_test:i_trial]
@@ -79,56 +87,69 @@ for i in range(nsim_regression):
     beta_hat = np.concatenate( ([mdl.model.intercept_], mdl.model.coef_))
     data_generator.calc_risk(beta_hat=beta_hat, has_intercept=True)
     
-    # (iv) Get test set variance
+    # (iv) Get test set standard deviations
     yhat_test_i = mdl.predict(X = xx_test_i)
-    di_err_sigma_test_i = {k: pd.Series(v(yy_test_i, yhat_test_i)).agg({'mean','std'}) 
-                           for k,v in di_resid_fun.items()}
-    di_err_sigma_test_i = {k:{'mean':v['mean'],
-                              'std':n_test/(n_test-1)*v['std']} 
-                              for k,v in di_err_sigma_test_i.items()}
-    dat_test_i = pd.DataFrame(di_err_sigma_test_i).T
-    dat_test_i.rename(columns={'mean':'err', 'std':'sigma'}, inplace=True)
+    di_err_sigma_test_i = dict.fromkeys(di_resid_fun)
+    for metric, resid_fun in di_resid_fun.items():
+        # Generate the errors
+        error_test = resid_fun(yy_test_i, yhat_test_i)
+        error_test_mu = error_test.mean()
+        di_std = dict.fromkeys(valid_std_methods)
+        for approach in valid_std_methods:  # Loop over the different STD estimator approaches
+            sighat_error = std(x=error_test, method=approach, random_state=seed, axis=0, ddof=1)
+            di_std[approach] = sighat_error
+        res_std_test = pd.DataFrame.from_dict(di_std, orient='index')
+        res_std_test = res_std_test.rename(columns={0:'sigma'}).rename_axis('approach')
+        res_std_test = res_std_test.assign(err_test=error_test_mu, metric=metric).reset_index()
+        di_err_sigma_test_i[metric] = res_std_test
+    dat_test_i = pd.concat(objs = list(di_err_sigma_test_i.values()))
+    dat_test_i.reset_index(drop=True, inplace=True)
     dat_test_i['sigma_n'] = dat_test_i['sigma'] / np.sqrt(n_test)
     dat_test_i['sigma_m'] = dat_test_i['sigma'] / np.sqrt(m_trial)
 
     # (v) Set up empirical null
     Delta_i = k_regression * dat_test_i['sigma_n']
-    h0hat_err_i = dat_test_i['err'] + Delta_i
-    prob_H0hat_i = np.mean(norm.cdf(-Delta_i / dat_test_i['sigma_n']))
+    dat_test_i['mu_Delta'] = dat_test_i['err_test'] + Delta_i
+    dat_test_i['prob_H0hat'] = norm.cdf(-Delta_i / dat_test_i['sigma_n'])
     mu2_i = -Delta_i / dat_test_i['sigma_m']
     dist_H0hat = nts(mu1=0, tau21=1, mu2=mu2_i, tau22=tau22, a=0, b=np.infty)
     dist_HAhat = nts(mu1=0, tau21=1, mu2=mu2_i, tau22=tau22, a=-np.infty, b=0)
-    c_alpha = dist_H0hat.ppf(alpha).flatten()[0]
-    exp_power = np.mean(dist_HAhat.cdf(c_alpha))
-    
-    
+    dat_test_i['c_alpha'] = dist_H0hat.ppf(alpha).flatten()
+    dat_test_i['power'] = dist_HAhat.cdf(dat_test_i['c_alpha'])
+    # c_alpha = dist_H0hat.ppf(alpha).flatten()[0]
+    # exp_power = np.mean(dist_HAhat.cdf(c_alpha))
+        
     # (vi) Run the trial
     yhat_trial_i = mdl.predict(X = xx_trial_i)
-    di_err_sigma_trial_i = {k: pd.Series(v(yy_trial_i, yhat_trial_i)).agg({'mean','std'}) 
-                            for k,v in di_resid_fun.items()}
-    di_err_sigma_trial_i = {k:{'mean':v['mean'],
-                            'std':m_trial/(m_trial-1)*v['std']} 
-                            for k,v in di_err_sigma_trial_i.items()}
-    dat_trial_i = pd.DataFrame(di_err_sigma_trial_i).T
-    dat_trial_i.rename(columns={'mean':'err', 'std':'sigma'}, inplace=True)
+    holder_err_trial = []
+    for metric, resid_fun in di_resid_fun.items():
+        # Generate the errors
+        error_trial = resid_fun(yy_trial_i, yhat_trial_i)
+        error_trial_mu = error_trial.mean()
+        dat_err_trial = pd.DataFrame({'err_trial':error_trial_mu}, index=[metric])
+        holder_err_trial.append(dat_err_trial)
+    dat_trial_i = pd.concat(objs=holder_err_trial).rename_axis('metric')
+    dat_trial_i.reset_index(inplace=True)
+    cols_test_keep = ['metric', 'approach', 
+                      'power', 'prob_H0hat', 
+                      'mu_Delta', 'c_alpha', 
+                      'sigma_m', 'err_test']
+    dat_trial_i = dat_trial_i.merge(dat_test_i[cols_test_keep])
     # Get the test statistic (in theory, gamma_m could be updated...)
-    s_Delta_i = (dat_trial_i['err'] - h0hat_err_i) / dat_test_i['sigma_m']
-    # Calculate the p-value
-    pval_i = dist_H0hat.cdf(s_Delta_i)
-    reject_i = s_Delta_i < c_alpha
+    dat_trial_i = dat_trial_i.assign(s_Delta = lambda x: (x['err_trial'] - x['mu_Delta']) / x['sigma_m'])
+    # Compare to critical value
+    dat_trial_i = dat_trial_i.assign(reject = lambda x: x['s_Delta'] < x['c_alpha'])
 
     # (vii) Compare to the "simulation" OOS
-    err_oos_i = pd.Series({k: getattr(data_generator, f'{k}_oracle') for k in metrics})
-    H0hat_i = err_oos_i >= h0hat_err_i
+    dat_oos_i = pd.Series({k: getattr(data_generator, f'{k}_oracle') for k in metrics})
+    dat_oos_i = dat_oos_i.rename_axis('metric').reset_index()
+    dat_oos_i.rename(columns = {0: 'mu_oracle'}, inplace=True)
+    dat_trial_i = dat_trial_i.merge(dat_oos_i)
+    dat_trial_i = dat_trial_i.assign(H0hat = lambda x: x['mu_oracle'] > x['mu_Delta'])
 
     # (vii) Record the results 
-    res_i = pd.DataFrame({'sim':i,
-                            'probH0':prob_H0hat_i, 'c_alpha':c_alpha, 'power':exp_power, 
-                            'Delta':Delta_i, 's_Delta':s_Delta_i, 
-                            'err_test':dat_test_i['err'], 'err_trial':dat_trial_i['err'], 'err_oos':err_oos_i,
-                            'sigma_test':dat_test_i['sigma'], 'sigma_trial':dat_trial_i['sigma'],
-                            'pval':pval_i, 'reject':reject_i, 'H0hat':H0hat_i})
-    holder_loop.append(res_i)
+    dat_trial_i.insert(0, 'sim', i+1)
+    holder_loop.append(dat_trial_i)
     
     # Check time
     if (i + 1) % 5 == 0:
@@ -137,9 +158,13 @@ for i in range(nsim_regression):
         rate = (i + 1) / dtime
         seta = nleft / rate
         vprint(f'Final alpha = {mdl.model.alpha:.2f}', verbose)
-        vprint(f'Empirical error = {dat_test_i.err.round(3).to_list()}, empirical H_0 = {h0hat_err_i.round(3).to_list()}', verbose)
-        vprint(f'Expected P(hatH_0|H_0) = {100*prob_H0hat_i:.1f}%\n'
-            f'Critical value: {c_alpha:.3f}, Expected power = {100*exp_power:.1f}%',
+        vprint(f'Empirical error = {dat_trial_i["err_test"].mean():.3f}\n'
+               f'empirical H_0 = {dat_trial_i["h0hat"].mean():.3f}\n', 
+               verbose)
+        vprint(
+                f'Expected P(hatH_0|H_0) = {100*dat_trial_i["prob_H0hat"].mean():.1f}%\n'
+                f'Critical value: {dat_trial_i["c_alpha"].mean():.4f}\n'
+                f'Expected power = {100*dat_trial_i["power"].mean():.1f}%',
             verbose)
         vprint('\n------------\n'
                 f'iterations to go: {nleft} (ETA = {seta:.0f} seconds)\n'
@@ -150,10 +175,13 @@ for i in range(nsim_regression):
     mdl.model = None
 
 # Merge the loop results
-res_reg = pd.concat(holder_loop).rename_axis('metric').reset_index()
+res_reg = pd.concat(holder_loop).reset_index(drop=True)
+# res_reg.rename(columns = {'h0hat':'H0hat'}, inplace=True)
+# .rename_axis('metric').reset_index()
 # Save for later
-print(f'Expected H0 rate = {res_reg.probH0.mean()*100:.1f}%, actual = {res_reg.H0hat.mean()*100:.1f}%')
-print(res_reg.groupby(['H0hat','metric',])[['reject']].agg({'mean','sum','count'}))
+print(f'Expected H0 rate = {100*res_reg["prob_H0hat"].mean():.1f}%\n'
+      f'Actual = {100*res_reg["H0hat"].mean():.1f}%')
+print(res_reg.groupby(['H0hat','metric','approach'])[['reject']].agg({'mean','sum','count'}))
 res_reg.to_csv(path_reg_results, index = False)
 # res_reg = pd.read_csv(path_reg_results)
 
