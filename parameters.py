@@ -26,6 +26,10 @@ seed = 1234
 nsim_plots = 100000
 atol_figs = 0.01    # Comparing simulation means to theory
 
+# Unit testing
+nsim_unittest = 1000000
+rtol_unittest = 1e-2
+
 # 0_datasets
 path_url_age = 'https://raw.githubusercontent.com/Moradnejad/AgeDataset/main/AgeDataset.rar'
 path_raw_age = os.path.join(dir_data, 'AgeDataset.csv')
@@ -56,15 +60,15 @@ theta_low_sims = mu_sims - k_sims*sigma_n
 
 
 # 3_regression
-nsim_regression = 10000
+nsim_regression = 100
 verbose_regression = True
 alphas = [0.0, 0.50, 1.0]
 num_imputer_strategy = 'median'
 cat_imputer_strategy = 'most_frequent'
 k_regression = 1.0
 n_train = 250
-n_test = 1000
-m_trial = 5000
+n_test = 249
+m_trial = 251
 s = 5
 p = 25
 sigma2_u = 5

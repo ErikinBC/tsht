@@ -130,7 +130,11 @@ class dgp_sparse_yX():
                  X: np.ndarray | None = None,
                  ) -> None:
         """
-        Calculates the MSE and MAE for a given linear regression model. NOTE! Assumes there is no actual intercept in the DGP
+        Calculates the MSE and MAE for a given linear regression model.
+
+        The distribution of the residuals is:
+            e = u + X'(beta - bhat)
+            e ~ N(0, variance_u + |beta - hat{beta}|^2_2)
 
         Args
         ====
@@ -151,8 +155,16 @@ class dgp_sparse_yX():
         l2_beta_err = np.sum(beta_err**2)
         
         # (ii) Calculate risk averaging over X
-        self.mse_oracle = self.sigma2_u + l2_beta_err
-        self.mae_oracle = np.sqrt( (self.mse_oracle) * (2 / np.pi) )
+        mse_mu = self.sigma2_u + l2_beta_err
+        mae_mu = np.sqrt( (self.mse_oracle) * (2 / np.pi) )
+        # Calculate the variance of the residuals
+        mse_var = None
+        mae_var = None
+        # Store if a DataFrame
+        self.oracle = pd.DataFrame({'conditional': False,
+                                    'metric':['mse', 'mae'],
+                                    'risk': [mse_mu, mae_mu],
+                                    'variance': []})
         
         # (iii) Calculate risk conditional on X (optional)
         self.mse_x_oracle = None
@@ -166,11 +178,19 @@ class dgp_sparse_yX():
                 iX = X.copy()
             err_X = beta_err.dot(iX.T.dot(iX)).dot(beta_err)
             eta_err = iX.dot(beta_err)
-            # Calculate the MSE expectation 
+            # (i) Calculate expectations
+            # MSE is residual variance plus 
             self.mse_x_oracle = self.sigma2_u + err_X / n_X
-            # Calculate the forlded normal expectation
+            # Calculate the folded normal expectation
             self.mae_x_oracle = np.sqrt(self.sigma2_u * 2 / np.pi) * np.exp(-eta_err**2/(2*self.sigma2_u)) + eta_err*(1 - 2*norm.cdf(-eta_err / np.sqrt(self.sigma2_u)))
             self.mae_x_oracle = np.sum(self.mae_x_oracle) / n_X
+            # Append on
+            oracle_x = pd.DataFrame({'conditional': False,
+                                    'metric':['mse', 'mae'],
+                                    'risk': [mse_mu, mae_mu],
+                                    'variance': []})
+            self.oracle = pd.concat(objs = [self.oracle, oracle_x])
+            self.oracle.reset_index(drop=True, inplace=True)            
 
 
 

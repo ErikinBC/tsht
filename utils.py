@@ -8,6 +8,7 @@ import pandas as pd
 from scipy.stats import chi2
 from sklearn.base import TransformerMixin
 from sklearn.feature_extraction.text import CountVectorizer
+from debiased_sd.estimators import std, valid_std_methods
 from statsmodels.stats.proportion import proportion_confint as prop_CI
 
 def makeifnot(path):
@@ -20,6 +21,33 @@ def vprint(stmt:str, verbose:bool) -> None:
     """Print if verbose"""
     if verbose:
         print(stmt)
+
+
+def generate_std_adjustments(
+        x: np.ndarray | pd.Series,
+        random_state: int | None = None,
+        colname_std: str = 'sigma', 
+        colname_approach: str = 'approach', 
+        ) -> pd.DataFrame:
+    """
+    For an array of data, calculate the mean and standard deviation with different adjustment methods part of the debiased_sd package
+
+    Args
+    ----
+
+    """
+    # Store results by method name
+    di_std = dict.fromkeys(valid_std_methods)
+    for approach in valid_std_methods:  
+        # Loop over the different STD estimator approaches
+        sighat = std(x=x, method=approach, random_state=random_state, axis=0, ddof=1)
+        di_std[approach] = sighat
+    # Concatenate results
+    res = pd.DataFrame.from_dict(di_std, orient='index')
+    res.rename(columns={0:colname_std}, inplace=True)
+    res.rename_axis(colname_approach, inplace=True)
+    res.reset_index(inplace=True)
+    return res
 
 
 def unzip_folder(folder: str, wildcard: str = '*.zip'):

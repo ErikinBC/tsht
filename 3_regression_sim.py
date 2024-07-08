@@ -10,12 +10,11 @@ import pandas as pd
 import plotnine as pn
 from time import time
 from scipy.stats import norm
-from debiased_sd.estimators import std, valid_std_methods
 # Internal
 from sntn.dists import nts
 from funs_models import elnet_wrapper
 from funs_simulations import dgp_sparse_yX
-from utils import vprint, gg_save
+from utils import vprint, gg_save, generate_std_adjustments
 from parameters import seed, alpha, nsim_regression, \
                         num_imputer_strategy, cat_imputer_strategy, \
                         alphas, di_elnet, \
@@ -25,6 +24,8 @@ from parameters import seed, alpha, nsim_regression, \
                         path_reg_results, dir_figs
 from parameters import verbose_regression as verbose
 
+# How often to aggregate and print results
+n_checkpoint = 5
 
 ##############################
 # --- (1) SET UP CLASSES --- #
@@ -50,18 +51,19 @@ data_generator = dgp_sparse_yX(s = s,
 ##################################
 # --- (2) RUN THE SIMULATION --- #
 
-"""
-TO-DOS
-i) ADD STD FROM ORACLE (STORE: TRIAL, TRIAL, ORACLE)
-ii) PARAMETRIZE FOR DIFFERENT NTEST/NTRIAL
-iii) FEWER OVERALL SIMULATIONS...
-"""
-
 # Total samples to split
 n = n_train + n_test + m_trial
 # Variance will be constant
 tau22 = m_trial / n_test
 
+# Columns to add for every loop
+cols_test_keep = [
+                'metric', 'approach', 
+                'power', 'prob_H0hat', 
+                'mu_Delta', 'c_alpha', 
+                'sigma_m', 'err_test'
+                ]
+    
 # Run simulation loop
 i_train = n_train
 i_test = n_train+n_test
@@ -94,13 +96,9 @@ for i in range(nsim_regression):
         # Generate the errors
         error_test = resid_fun(yy_test_i, yhat_test_i)
         error_test_mu = error_test.mean()
-        di_std = dict.fromkeys(valid_std_methods)
-        for approach in valid_std_methods:  # Loop over the different STD estimator approaches
-            sighat_error = std(x=error_test, method=approach, random_state=seed, axis=0, ddof=1)
-            di_std[approach] = sighat_error
-        res_std_test = pd.DataFrame.from_dict(di_std, orient='index')
-        res_std_test = res_std_test.rename(columns={0:'sigma'}).rename_axis('approach')
-        res_std_test = res_std_test.assign(err_test=error_test_mu, metric=metric).reset_index()
+        res_std_test = generate_std_adjustments(error_test, random_state=seed)
+        res_std_test.insert(0, 'metric', metric)
+        res_std_test.insert(res_std_test.shape[1], 'err_test', error_test_mu)
         di_err_sigma_test_i[metric] = res_std_test
     dat_test_i = pd.concat(objs = list(di_err_sigma_test_i.values()))
     dat_test_i.reset_index(drop=True, inplace=True)
@@ -116,8 +114,6 @@ for i in range(nsim_regression):
     dist_HAhat = nts(mu1=0, tau21=1, mu2=mu2_i, tau22=tau22, a=-np.infty, b=0)
     dat_test_i['c_alpha'] = dist_H0hat.ppf(alpha).flatten()
     dat_test_i['power'] = dist_HAhat.cdf(dat_test_i['c_alpha'])
-    # c_alpha = dist_H0hat.ppf(alpha).flatten()[0]
-    # exp_power = np.mean(dist_HAhat.cdf(c_alpha))
         
     # (vi) Run the trial
     yhat_trial_i = mdl.predict(X = xx_trial_i)
@@ -130,10 +126,6 @@ for i in range(nsim_regression):
         holder_err_trial.append(dat_err_trial)
     dat_trial_i = pd.concat(objs=holder_err_trial).rename_axis('metric')
     dat_trial_i.reset_index(inplace=True)
-    cols_test_keep = ['metric', 'approach', 
-                      'power', 'prob_H0hat', 
-                      'mu_Delta', 'c_alpha', 
-                      'sigma_m', 'err_test']
     dat_trial_i = dat_trial_i.merge(dat_test_i[cols_test_keep])
     # Get the test statistic (in theory, gamma_m could be updated...)
     dat_trial_i = dat_trial_i.assign(s_Delta = lambda x: (x['err_trial'] - x['mu_Delta']) / x['sigma_m'])
@@ -145,14 +137,15 @@ for i in range(nsim_regression):
     dat_oos_i = dat_oos_i.rename_axis('metric').reset_index()
     dat_oos_i.rename(columns = {0: 'mu_oracle'}, inplace=True)
     dat_trial_i = dat_trial_i.merge(dat_oos_i)
-    dat_trial_i = dat_trial_i.assign(H0hat = lambda x: x['mu_oracle'] > x['mu_Delta'])
-
+    # Calculate whether the empirical null is True
+    dat_trial_i['H0hat'] = dat_trial_i['mu_oracle'] > dat_trial_i['mu_Delta']
+    
     # (vii) Record the results 
     dat_trial_i.insert(0, 'sim', i+1)
     holder_loop.append(dat_trial_i)
     
     # Check time
-    if (i + 1) % 5 == 0:
+    if (i + 1) % n_checkpoint == 0:
         dtime = time() - stime
         nleft = nsim_regression - (i + 1)
         rate = (i + 1) / dtime
