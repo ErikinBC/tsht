@@ -18,9 +18,9 @@ params_dgp = {'s': 2,
               'p': 5, 
               'sigma2_u': 4, 
               'seed': seed}
-params_train = {'n': 1000,
+params_train = {'n': 100,
                'seed': seed}
-params_oos = {'n': nsim_unittest+1,
+params_oos = {'n': nsim_unittest,
                'seed': seed}
 
 p_seq = np.linspace(1, 0, num=params_dgp['p'])
@@ -38,6 +38,12 @@ di_SigmaX = {
             }
 # Set up the pytest parameters
 SigmaX_params = pytest.mark.parametrize("Sigma_X", list(di_SigmaX.values()))
+
+"""
+i) REPEAT FOR | X
+ii) FIT REGRESSION AND CLASSIFICATION
+iii) ADD ACCURACY AND CROSS ENTROY
+"""
 
 
 class TestDGPSparseYX:
@@ -74,20 +80,19 @@ class TestDGPSparseYX:
         assert np.all((confint_sigma2_X[0] <= X_j_vars) & (confint_sigma2_X[1] >= X_j_vars)), \
             'confidence internval does not contain X_j variance == 1'
         
-    # (i) NEED TO CHECK WITH INTERCEPT (MAKE THIS A DECORATOR!)
     @SigmaX_params
-    @pytest.mark.parametrize("fit_intercept", [True, False])
+    @pytest.mark.parametrize("fit_intercept", [False, True])
     def test_calc_risk(self, Sigma_X, fit_intercept: bool):
         """
         Checks whether the calc_risk function gets the right mean and variance of the error function
         """
+        # -- (i) Set up model -- #
         # Generate the training data
         dgp_gen = dgp_sparse_yX(**params_dgp, Sigma_X=Sigma_X['input'])
         y_train, x_train = dgp_gen.gen_yX(**params_train)
         # Fit linear regression model
         linreg = LinearRegression(fit_intercept=fit_intercept)
         linreg.fit(x_train, y_train)
-        del y_train, x_train
         # Introduce some more noise in the intercept
         if fit_intercept:
             linreg.intercept_ = stats.norm().rvs(1, random_state=1)[0]
@@ -96,26 +101,57 @@ class TestDGPSparseYX:
             bhat = np.concatenate(([linreg.intercept_], linreg.coef_))
         else:
             bhat = linreg.coef_
-        dgp_gen.calc_risk(beta_hat=bhat, has_intercept=fit_intercept)
-        # Generate "out of sample" data
+        eta_train = linreg.predict(x_train)
+        dgp_gen.calc_risk(beta_hat=bhat, has_intercept=fit_intercept, X=x_train)
+        di_args_melt = {'id_vars': ['conditional', 'metric'], 
+                        'value_vars': ['risk','variance'], 
+                        'var_name' : 'moment'}
+        dat_oracle = dgp_gen.oracle.melt(**di_args_melt, value_name='oracle')
+
+        # -- (ii) Compare to conditional data -- #
+        # Repeat 1000 draws 2 times
+        n_repeat = 2
+        n_draw = 1000
+        holder = np.zeros([n_repeat, len(y_train)])
+        di_sim_X = {'mse':{'risk':holder.copy(), 'variance':holder.copy()},
+                    'mae':{'risk':holder.copy(), 'variance':holder.copy()}}
+        for i in range(n_repeat):
+            y_X = dgp_gen.gen_yX(X = x_train, seed=i+1, n=n_draw)
+            error_X = y_X - np.atleast_2d(eta_train).T
+            di_sim_X['mse']['risk'][i] += np.mean(error_X**2, axis=1)
+            di_sim_X['mse']['variance'][i] += np.var(error_X**2, axis=1, ddof=1)
+            di_sim_X['mae']['risk'][i] += np.mean(np.abs(error_X), axis=1)
+            di_sim_X['mae']['variance'][i] += np.var(np.abs(error_X), axis=1, ddof=1)
+        di_sim_X = {k:{metric: np.mean(mat) for metric, mat in di.items()} for k,di in di_sim_X.items()}
+        dat_emp_X = pd.DataFrame.from_dict(di_sim_X, orient='index').\
+            rename_axis('metric').reset_index()
+        dat_emp_X.insert(0, 'conditional', True)
+        dat_emp_X = dat_emp_X.melt(**di_args_melt, value_name='emp')
+        # Compare to the oracle values
+        dat_emp_X = dat_emp_X.merge(dat_oracle)
+        np.testing.assert_allclose(dat_emp_X['oracle'], dat_emp_X['emp'], rtol=rtol_unittest)
+
+        # -- (iii) Generate "out of sample" data -- #
         y_oos, x_oos = dgp_gen.gen_yX(**params_oos)
         eta_oos = linreg.predict(x_oos)
         error_oos = y_oos - eta_oos
         del y_oos, x_oos
         # Calculate the empirical mean and variance of the squared and absolute errors
-        mse_sim_mu = np.mean( (error_oos)**2 )
-        mae_sim_mu = np.mean( np.abs(error_oos) )
-        mse_sim_var = np.var( (error_oos)**2 , ddof=1)
-        mae_sim_var = np.var( np.abs(error_oos), ddof=1)
+        di_sim = di_sim_X.copy()
+        di_sim['mse']['risk'] = np.mean( (error_oos)**2 )
+        di_sim['mse']['variance'] = np.var( (error_oos)**2 , ddof=1)
+        di_sim['mae']['risk'] = np.mean( np.abs(error_oos) )
+        di_sim['mae']['variance'] = np.var( np.abs(error_oos), ddof=1)
         
         # Compare theory to empirical
-        dat_emp = pd.DataFrame({'metric':['mse','mae'], 
-                    'risk':[mse_sim_mu, mae_sim_mu],
-                    'variance':[mse_sim_var, mae_sim_var]})
-        dat_comp = dgp_gen.oracle.\
-            melt('metric', ['risk','variance'], value_name='oracle').\
-            merge(dat_emp.melt('metric', ['risk','variance'], value_name='emp'))
-        np.testing.assert_allclose(dat_comp['oracle'], dat_comp['emp'], rtol=rtol_unittest)
+        dat_emp = pd.DataFrame.from_dict(di_sim, orient='index').\
+            rename_axis('metric').reset_index()
+        dat_emp.insert(0, 'conditional', False)
+        dat_emp = dat_emp.melt(**di_args_melt, value_name='emp')
+        # Compare to the oracle values
+        dat_emp = dat_emp.merge(dat_oracle)
+        np.testing.assert_allclose(dat_emp['oracle'], dat_emp['emp'], rtol=rtol_unittest)
+        
 
 
 params_theory = [

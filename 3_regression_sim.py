@@ -27,6 +27,7 @@ from parameters import verbose_regression as verbose
 # How often to aggregate and print results
 n_checkpoint = 5
 
+
 ##############################
 # --- (1) SET UP CLASSES --- #
 

@@ -98,6 +98,7 @@ class dgp_sparse_yX():
         self.b0 = b0
         self.beta = beta
         self.sigma2_u = sigma2_u
+        self.sigma_u = np.sqrt(sigma2_u)
         self.dist_u = norm(loc=0, scale = np.sqrt(sigma2_u))
         mu = np.repeat(0, p)
         self.dist_X = multivariate_normal(mean = mu, cov = Sigma_X)
@@ -155,7 +156,7 @@ class dgp_sparse_yX():
     def calc_risk(self,
                  beta_hat: np.ndarray,
                  has_intercept: bool = True,
-                #  X: np.ndarray | None = None,
+                 X: np.ndarray | None = None,
                  ) -> None:
         """
         Calculates the MSE and MAE for a given linear regression model.
@@ -182,51 +183,41 @@ class dgp_sparse_yX():
             beta_hat0 = 0
         assert beta_hat.shape[0] == self.beta.shape[0], f'With has_intercept={has_intercept}, there should be {self.p}+1 parameters in beta_hat, not: {beta_hat.shape[0]+1}'
         beta_err = self.beta - beta_hat
-        l2_beta_err = np.sum(beta_err**2)
+        l2_beta_err = self.Sigma_X.dot(beta_err).dot(beta_err)
         
         # (ii) Calculate risk averaging over X
         total_var = self.sigma2_u + l2_beta_err
         total_sd = np.sqrt(total_var)
-        mu = self.intercept - beta_hat0
-        dist_chi2 = stats.ncx2(df=1, nc=mu**2 / total_var, loc=0, scale=total_var)
-        dist_folded = stats.foldnorm(c=np.abs(mu/total_sd), loc=0, scale=total_sd)
-        mse_mu = dist_chi2.mean()
-        mae_mu = dist_folded.mean()
-
-        # Calculate the variance of the residuals
-        mse_var = dist_chi2.var()
-        mae_var = dist_folded.var()
-        # Store if a DataFrame
-        self.oracle = pd.DataFrame({'conditional': False,
-                                    'metric':['mse', 'mae'],
-                                    'risk': [mse_mu, mae_mu],
-                                    'variance': [mse_var, mae_var]})
+        intercept_err = self.intercept - beta_hat0
+        self.dist_chi2 = stats.ncx2(df=1, nc=intercept_err**2 / total_var, loc=0, scale=total_var)
+        self.dist_folded = stats.foldnorm(c=np.abs(intercept_err/total_sd), loc=0, scale=total_sd)
+        di_dists = {'mse':self.dist_chi2, 'mae': self.dist_folded}
+        di_dists = {metric:{'risk':dist.mean(),
+                            'variance':dist.var().sum()
+                        }  for metric, dist in di_dists.items()}
+        self.oracle = pd.DataFrame.from_dict(di_dists, orient='index').rename_axis('metric').reset_index()
+        self.oracle.insert(0, 'conditional', False)
         
-        # # (iii) Calculate risk conditional on X (optional)
-        # self.mse_x_oracle = None
-        # self.mae_x_oracle = None
-        # if X is not None:
-        #     self._check_X(X)
-        #     n_X = len(X)
-        #     if has_intercept:
-        #         iX = np.hstack((np.ones([n_X,1]), X))
-        #     else:
-        #         iX = X.copy()
-        #     err_X = beta_err.dot(iX.T.dot(iX)).dot(beta_err)
-        #     eta_err = iX.dot(beta_err)
-        #     # (i) Calculate expectations
-        #     # MSE is residual variance plus 
-        #     self.mse_x_oracle = self.sigma2_u + err_X / n_X
-        #     # Calculate the folded normal expectation
-        #     self.mae_x_oracle = np.sqrt(self.sigma2_u * 2 / np.pi) * np.exp(-eta_err**2/(2*self.sigma2_u)) + eta_err*(1 - 2*norm.cdf(-eta_err / np.sqrt(self.sigma2_u)))
-        #     self.mae_x_oracle = np.sum(self.mae_x_oracle) / n_X
-        #     # Append on
-        #     oracle_x = pd.DataFrame({'conditional': False,
-        #                             'metric':['mse', 'mae'],
-        #                             'risk': [mse_mu, mae_mu],
-        #                             'variance': []})
-        #     self.oracle = pd.concat(objs = [self.oracle, oracle_x])
-        #     self.oracle.reset_index(drop=True, inplace=True)
+        # (iii) Calculate risk conditional on X (optional)
+        if X is not None:
+            self._check_X(X)
+            n_X = len(X)
+            # of length n
+            eta_err = X.dot(beta_err)
+            X_err = intercept_err + eta_err
+            self.dist_chi2_X = stats.ncx2(df=1, nc=X_err**2 / self.sigma2_u, loc=0, scale=self.sigma2_u)
+            self.dist_folded_X = stats.foldnorm(c=np.abs(X_err/self.sigma_u), loc=0, scale=self.sigma_u)
+            di_dists_X = {'mse':self.dist_chi2_X, 
+                          'mae': self.dist_folded_X}
+            # Get the average value over each row of X
+            di_dists_X = {metric:{'risk':dist.mean().sum() / n_X, 
+                             'variance':dist.var().sum() / n_X,
+                             }  for metric, dist in di_dists_X.items()}
+            oracle_x = pd.DataFrame.from_dict(di_dists_X, orient='index').rename_axis('metric').reset_index()
+            oracle_x.insert(0, 'conditional', True)
+            # Append on
+            self.oracle = pd.concat(objs = [self.oracle, oracle_x])
+            self.oracle.reset_index(drop=True, inplace=True)
 
 
 
