@@ -6,5 +6,4 @@ scratch.pyd
 data/
 .vscode
 .DS_Store
-__init__.py
 !archive/0_*

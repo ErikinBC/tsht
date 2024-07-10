@@ -15,10 +15,11 @@ class dgp_sparse_yX():
                  s: int, 
                  p: int, 
                  sigma2_u: float,
-                 Sigma_X: float | np.ndarray | None = None, 
-                 b0: int = 1, 
+                 Sigma_X: float | np.ndarray | None = 1.0, 
+                 b0: int = 1.0, 
                  beta: np.ndarray | None = None,
-                 seed: int | None = None
+                 seed: int | None = None, 
+                 normalize_Sigma_X: bool = False,
                  ):
         """
         Class to help create labels and features in a sparse linear regression data generating process. DGP is:
@@ -42,32 +43,39 @@ class dgp_sparse_yX():
         beta: np.ndarray | None = None
             (Optional) If specified, the coefficient vector to be used (otherwise will be generated)
         Sigma_X: float | np.ndarray | None = None
-            (Optional) The covariance matrix of X, if not specified, will be randomly generated
+            (Optional) The covariance matrix of X, if not specified, will be randomly generated, if float, will assume diagonal, if 1-d array, will assume diagnonal as well
         seed: int | None = None
             (Optional) Will seed the results of beta and Sigma_X
+        normalize_Sigma_X: bool, optional
+            Should we normalize the values of Sigma_X so the largest variance is one?
         """
         # (i) Do input checks
         assert all([z > 0 for z in [s, p, sigma2_u]]), 'n, p, and sigma2 need to be strictly positive'
         assert s < p, 's must be less than p'
 
         # (ii) Generate the covariance matrix for X
-        if Sigma_X is not None:  # If user is specifying Sigma, check it is valid
-            Sigma_X = np.array(Sigma_X)
-            if len(Sigma_X.shape) <= 1:  # Check to see if it's a constant
-                Sigma_X = np.atleast_2d(Sigma_X)
-            else:
-                assert len(Sigma_X.shape) == 2, 'if Sigma_X is not a sclar, it must be a matrix'
-                assert Sigma_X.shape[1] == Sigma_X.shape[0], 'Sigma_X must be a square matrix'
-                assert Sigma_X.shape[1] == p, 'Sigma_X must have the same dimensions as p'
-                assert issymmetric(Sigma_X), 'Sigma_X must be symmetric'
-                assert is_psd_cholesky(Sigma_X), 'Sigma_X must be positive semi-definite'
-        else:
+        if Sigma_X is None:
+            # Generate a (p,p) covariance matrix
             Sigma_X = norm().rvs([p,p], random_state=seed)
             Sigma_X = Sigma_X.dot(Sigma_X.T)
-        # Normalize so the larget value is one
-        mSX = np.max(np.abs(Sigma_X))
-        if mSX != 1:
-            Sigma_X = Sigma_X / mSX
+        else:
+            # User has provided a covariance matrix, now we need to check it
+            Sigma_X = np.array(Sigma_X)
+            n_dims = len(Sigma_X.shape)
+            assert n_dims <= 2, f'Sigma_X must either be a float, a (p,) array or a (p,p) array'
+            if n_dims == 0:
+                Sigma_X = np.diag(np.repeat(Sigma_X, p))
+            elif n_dims == 1:
+                # Convert into a 
+                Sigma_X = np.diag(Sigma_X)
+            else:
+                assert Sigma_X.shape[1] == Sigma_X.shape[0], 'Sigma_X must be a square matrix'
+        assert Sigma_X.shape[1] == p, 'Sigma_X must have the same dimensions as p'
+        assert issymmetric(Sigma_X), 'Sigma_X must be symmetric'
+        assert is_psd_cholesky(Sigma_X), 'Sigma_X must be positive semi-definite'
+        # Normalize if request
+        if normalize_Sigma_X:
+            Sigma_X /= np.max(np.abs(Sigma_X))
 
         # (iii) Generate coefficients
         if beta is not None:
@@ -88,7 +96,8 @@ class dgp_sparse_yX():
         self.beta = beta
         self.sigma2_u = sigma2_u
         self.dist_u = norm(loc=0, scale = np.sqrt(sigma2_u))
-        self.dist_X = multivariate_normal(mean = np.repeat(0, p), cov = Sigma_X)
+        mu = np.repeat(0, p)
+        self.dist_X = multivariate_normal(mean = mu, cov = Sigma_X)
     
     def _check_X(self, X: np.ndarray) -> None:
         """Make sure X is the right shape"""
@@ -98,7 +107,9 @@ class dgp_sparse_yX():
     def gen_yX(self, 
                n: int, 
                X: np.ndarray | None = None,
-               seed: int | None = None
+               seed: int | None = None,
+               y_only: bool = False,
+               X_only: bool = False,
                ) -> Tuple[np.ndarray, np.ndarray] | np.ndarray:
         """
         Draw from the data generating process
@@ -116,13 +127,19 @@ class dgp_sparse_yX():
             u = self.dist_u.rvs(size = n, random_state = seed)
             eta = X.dot(self.beta)
             y = eta + u
-            return y, X
+            if y_only:
+                return y
+            elif X_only:
+                return X
+            else:
+                return y, X
         else:  # Draw from ~ | X
             self._check_X(X)
             U = self.dist_u.rvs(size = (X.shape[0], n), random_state=seed)
             Eta = X.dot(np.atleast_2d(self.beta).T)
             Y = Eta + U
             return Y
+
 
     def calc_risk(self,
                  beta_hat: np.ndarray,
@@ -135,7 +152,8 @@ class dgp_sparse_yX():
         The distribution of the residuals is:
             e = u + X'(beta - bhat)
             e ~ N(0, variance_u + |beta - hat{beta}|^2_2)
-
+        e^2 ~ nc_chi2(df=1, nc=(mu / sigma)**2), scale=
+            
         Args
         ====
         beta_hat: np.ndarray
@@ -155,16 +173,22 @@ class dgp_sparse_yX():
         l2_beta_err = np.sum(beta_err**2)
         
         # (ii) Calculate risk averaging over X
-        mse_mu = self.sigma2_u + l2_beta_err
-        mae_mu = np.sqrt( (self.mse_oracle) * (2 / np.pi) )
+        total_var = self.sigma2_u + l2_beta_err
+        dist_chi2 = stats.chi2(df=1, scale=total_var)
+        dist_folded = stats.foldnorm(c=0, loc=0, scale=np.sqrt(total_var))
+        mse_mu = dist_chi2.mean()
+        mae_mu = dist_folded.mean()
+        # mse_mu = self.sigma2_u + l2_beta_err
+        # mae_mu = np.sqrt( (self.sigma2_u + l2_beta_err) * (2 / np.pi) )
+
         # Calculate the variance of the residuals
-        mse_var = None
-        mae_var = None
+        mse_var = dist_chi2.var()
+        mae_var = dist_folded.var()
         # Store if a DataFrame
         self.oracle = pd.DataFrame({'conditional': False,
                                     'metric':['mse', 'mae'],
                                     'risk': [mse_mu, mae_mu],
-                                    'variance': []})
+                                    'variance': [mse_var, mae_var]})
         
         # (iii) Calculate risk conditional on X (optional)
         self.mse_x_oracle = None
