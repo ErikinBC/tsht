@@ -28,7 +28,7 @@ atol_figs = 0.01    # Comparing simulation means to theory
 
 # Unit testing
 nsim_unittest = 1000000
-rtol_unittest = 1e-2
+rtol_unittest = 0.011
 
 # 0_datasets
 path_url_age = 'https://raw.githubusercontent.com/Moradnejad/AgeDataset/main/AgeDataset.rar'

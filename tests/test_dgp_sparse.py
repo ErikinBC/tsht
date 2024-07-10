@@ -18,8 +18,11 @@ params_dgp = {'s': 2,
               'p': 5, 
               'sigma2_u': 4, 
               'seed': seed}
-params_gen = {'n': 100,
-              'seed': seed}
+params_train = {'n': 1000,
+               'seed': seed}
+params_oos = {'n': nsim_unittest+1,
+               'seed': seed}
+
 p_seq = np.linspace(1, 0, num=params_dgp['p'])
 ar_covar = toeplitz(p_seq, p_seq)
 # Define the different covariance matrices to test
@@ -45,66 +48,74 @@ class TestDGPSparseYX:
         dgp = dgp_sparse_yX(**params_dgp, Sigma_X=Sigma_X['input'])
         assert np.all(dgp.Sigma_X == Sigma_X['output']), 'Sigma_X does not look as expected'
 
-    def test_gen_yX_output(self, Sigma_X=1):
+    @SigmaX_params
+    def test_gen_yX_output(self, Sigma_X, alpha: float = 0.05):
         """Does the generated data roughly adhere to what was expected?"""
         # Generate the data
-        dgp = dgp_sparse_yX(**params_dgp, Sigma_X=Sigma_X)
-        result = dgp.gen_yX(**params_gen)
-        # Variance checks
-
+        dgp = dgp_sparse_yX(**params_dgp, Sigma_X=Sigma_X['input'])
+        result = dgp.gen_yX(**params_train)
         # Shape/type checks
         assert isinstance(result, tuple), "Expected output to be a tuple"
         assert len(result) == 2, "Expected tuple length to be 2"
         assert isinstance(result[0], np.ndarray), "Expected first element to be a numpy array"
         assert isinstance(result[1], np.ndarray), "Expected second element to be a numpy array"
+        assert result[0].shape == (params_train['n'],), 'y is not the expected size'
+        assert result[1].shape == (params_train['n'], params_dgp['p']), 'X is not the expected size'
+        # Variance checks
+        sighat2_y = result[0].var(ddof=1)
+        sighat2_X = result[1].var(axis=0, ddof=1)
+        dof = params_train['n'] - 1
+        chi2_quants = stats.chi2(df=dof).ppf([1-alpha/2, alpha/2])
+        confint_sigma2_y = dof*sighat2_y / chi2_quants
+        assert (dgp.y_var >= confint_sigma2_y[0]) & (dgp.y_var <= confint_sigma2_y[1]), \
+            'confidence interval does not contain population parameter!'
+        confint_sigma2_X = np.atleast_2d(dof*sighat2_X) / np.atleast_2d(chi2_quants).T
+        X_j_vars = np.diag(Sigma_X['output'])
+        assert np.all((confint_sigma2_X[0] <= X_j_vars) & (confint_sigma2_X[1] >= X_j_vars)), \
+            'confidence internval does not contain X_j variance == 1'
         
-
-
-# (i) NEED TO CHECK WITH INTERCEPT (MAKE THIS A DECORATOR!)
-
-# ! REPEAT FOR THE DGP ! #
-def test_regression(
-                    nsim: int = nsim_unittest,
-                    ) -> None:
-    # Create generator
-    dgp_gen = dgp_sparse_yX(**params_dgp)
-    # Draw data and fit linear regression model
-    yy, xx = dgp_gen.gen_yX(n=params_dgp['n'], seed=params_dgp['seed'])
-    linreg = LinearRegression(fit_intercept=False)
-    linreg.fit(xx, yy)
-    print(np.mean( (yy - linreg.predict(xx))**2 ))
-    linreg.coef_ = np.repeat(0, dgp_gen.beta.shape[0])
-    print(np.mean( (yy - linreg.predict(xx))**2 ))
-    # breakpoint()
-    # Calculate the coefficient
-    bhat = linreg.coef_
-    dgp_gen.calc_risk(beta_hat=bhat, has_intercept=False)
-
-    # Generate "out of sample" data
-    breakpoint()
-    yy, xx = dgp_gen.gen_yX(n=nsim, seed=params_dgp['seed'])
-    # error_oos = dgp_gen.gen_yX(n=nsim, seed=seed, y_only=True)
-    # error_oos -= linreg.predict(dgp_gen.gen_yX(n=nsim, seed=seed, X_only=True))
-    error_oos = yy - linreg.predict(xx)
-    del xx
-    mse_sim_mu = np.mean( (error_oos)**2 )
-    mae_sim_mu = np.mean( np.abs(error_oos) )
-    mse_sim_var = np.var( (error_oos)**2 , ddof=1)
-    mae_sim_var = np.var( np.abs(error_oos), ddof=1)
-    
-    # Compare theory to empirical
-    dat_emp = pd.DataFrame({'metric':['mse','mae'], 
-                  'risk':[mse_sim_mu, mae_sim_mu],
-                  'variance':[mse_sim_var, mae_sim_var]})
-    dat_comp = dgp_gen.oracle.\
-        melt('metric', ['risk','variance'], value_name='oracle').\
-        merge(dat_emp.melt('metric', ['risk','variance'], value_name='emp'))
-    print(dat_comp)
-    breakpoint()
-    np.testing.assert_allclose(dat_comp['oracle'], dat_comp['emp'], rtol=0.01)
-
-    assert True
-
+    # (i) NEED TO CHECK WITH INTERCEPT (MAKE THIS A DECORATOR!)
+    @SigmaX_params
+    @pytest.mark.parametrize("fit_intercept", [True, False])
+    def test_calc_risk(self, Sigma_X, fit_intercept: bool):
+        """
+        Checks whether the calc_risk function gets the right mean and variance of the error function
+        """
+        # Generate the training data
+        dgp_gen = dgp_sparse_yX(**params_dgp, Sigma_X=Sigma_X['input'])
+        y_train, x_train = dgp_gen.gen_yX(**params_train)
+        # Fit linear regression model
+        linreg = LinearRegression(fit_intercept=fit_intercept)
+        linreg.fit(x_train, y_train)
+        del y_train, x_train
+        # Introduce some more noise in the intercept
+        if fit_intercept:
+            linreg.intercept_ = stats.norm().rvs(1, random_state=1)[0]
+        # Calculate the risk metrics
+        if fit_intercept:
+            bhat = np.concatenate(([linreg.intercept_], linreg.coef_))
+        else:
+            bhat = linreg.coef_
+        dgp_gen.calc_risk(beta_hat=bhat, has_intercept=fit_intercept)
+        # Generate "out of sample" data
+        y_oos, x_oos = dgp_gen.gen_yX(**params_oos)
+        eta_oos = linreg.predict(x_oos)
+        error_oos = y_oos - eta_oos
+        del y_oos, x_oos
+        # Calculate the empirical mean and variance of the squared and absolute errors
+        mse_sim_mu = np.mean( (error_oos)**2 )
+        mae_sim_mu = np.mean( np.abs(error_oos) )
+        mse_sim_var = np.var( (error_oos)**2 , ddof=1)
+        mae_sim_var = np.var( np.abs(error_oos), ddof=1)
+        
+        # Compare theory to empirical
+        dat_emp = pd.DataFrame({'metric':['mse','mae'], 
+                    'risk':[mse_sim_mu, mae_sim_mu],
+                    'variance':[mse_sim_var, mae_sim_var]})
+        dat_comp = dgp_gen.oracle.\
+            melt('metric', ['risk','variance'], value_name='oracle').\
+            merge(dat_emp.melt('metric', ['risk','variance'], value_name='emp'))
+        np.testing.assert_allclose(dat_comp['oracle'], dat_comp['emp'], rtol=rtol_unittest)
 
 
 params_theory = [
@@ -115,9 +126,7 @@ params_theory = [
 ]
 @pytest.mark.parametrize("mu, sigma, seed", params_theory)
 def test_theory(mu: int, sigma: int, seed: int) -> None:
-    """
-    Compares theoretical to empirical mean
-    """
+    """Compares theoretical to empirical mean of the assumed distributional forms"""
     print(f'mu = {mu:.3f}, sigma = {sigma:.3f}, seed = {seed}')
     # Baseline normal distribution
     dist_gauss = stats.norm(loc=mu, scale=sigma)
@@ -143,4 +152,5 @@ def test_theory(mu: int, sigma: int, seed: int) -> None:
 
 
 if __name__ == '__main__':
+    # Will only execute pytest if code called directly, otherwise will treat as an import
     pytest.main()

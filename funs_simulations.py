@@ -72,10 +72,13 @@ class dgp_sparse_yX():
                 assert Sigma_X.shape[1] == Sigma_X.shape[0], 'Sigma_X must be a square matrix'
         assert Sigma_X.shape[1] == p, 'Sigma_X must have the same dimensions as p'
         assert issymmetric(Sigma_X), 'Sigma_X must be symmetric'
+        # Note PSD ensures off diagnonals cannot be larger (in abs terms) than diagonals
         assert is_psd_cholesky(Sigma_X), 'Sigma_X must be positive semi-definite'
         # Normalize if request
         if normalize_Sigma_X:
             Sigma_X /= np.max(np.abs(Sigma_X))
+        # Determine if the covariance is diagonal only
+        self.diagonal_Sigma = np.all(Sigma_X[~np.eye(p, dtype=bool)] == 0)
 
         # (iii) Generate coefficients
         if beta is not None:
@@ -98,7 +101,15 @@ class dgp_sparse_yX():
         self.dist_u = norm(loc=0, scale = np.sqrt(sigma2_u))
         mu = np.repeat(0, p)
         self.dist_X = multivariate_normal(mean = mu, cov = Sigma_X)
-    
+        self.intercept = 0
+        # Calculate variance of X'beta ~ N(0, beta'Sigma beta)
+        if self.diagonal_Sigma:
+            self.eta_var = np.sum( np.diag(Sigma_X) * beta**2 )
+        else:
+            self.eta_var = Sigma_X.dot(beta).dot(beta)
+        self.y_var = self.eta_var + self.sigma2_u
+
+
     def _check_X(self, X: np.ndarray) -> None:
         """Make sure X is the right shape"""
         assert len(X.shape) == 2, 'X needs to be a matrix'
@@ -125,7 +136,7 @@ class dgp_sparse_yX():
         if X is None:  # Draw everything from scratch
             X = self.dist_X.rvs(size = n, random_state = seed)
             u = self.dist_u.rvs(size = n, random_state = seed)
-            eta = X.dot(self.beta)
+            eta = X.dot(self.beta) + self.intercept
             y = eta + u
             if y_only:
                 return y
@@ -136,7 +147,7 @@ class dgp_sparse_yX():
         else:  # Draw from ~ | X
             self._check_X(X)
             U = self.dist_u.rvs(size = (X.shape[0], n), random_state=seed)
-            Eta = X.dot(np.atleast_2d(self.beta).T)
+            Eta = X.dot(np.atleast_2d(self.beta).T) + self.intercept
             Y = Eta + U
             return Y
 
@@ -144,7 +155,7 @@ class dgp_sparse_yX():
     def calc_risk(self,
                  beta_hat: np.ndarray,
                  has_intercept: bool = True,
-                 X: np.ndarray | None = None,
+                #  X: np.ndarray | None = None,
                  ) -> None:
         """
         Calculates the MSE and MAE for a given linear regression model.
@@ -165,21 +176,22 @@ class dgp_sparse_yX():
         """
         # (i) Input checks
         if has_intercept:
-            beta_act = np.concatenate(( [0], self.beta ))
+            beta_hat0 = beta_hat[0]
+            beta_hat = beta_hat[1:]
         else:
-            beta_act = self.beta.copy()
-        assert beta_hat.shape[0] == beta_act.shape[0], f'With has_intercept={has_intercept}, there should be {self.p}+1 parameters in beta_hat, not: {beta_hat.shape[0]}'
-        beta_err = beta_act - beta_hat
+            beta_hat0 = 0
+        assert beta_hat.shape[0] == self.beta.shape[0], f'With has_intercept={has_intercept}, there should be {self.p}+1 parameters in beta_hat, not: {beta_hat.shape[0]+1}'
+        beta_err = self.beta - beta_hat
         l2_beta_err = np.sum(beta_err**2)
         
         # (ii) Calculate risk averaging over X
         total_var = self.sigma2_u + l2_beta_err
-        dist_chi2 = stats.chi2(df=1, scale=total_var)
-        dist_folded = stats.foldnorm(c=0, loc=0, scale=np.sqrt(total_var))
+        total_sd = np.sqrt(total_var)
+        mu = self.intercept - beta_hat0
+        dist_chi2 = stats.ncx2(df=1, nc=mu**2 / total_var, loc=0, scale=total_var)
+        dist_folded = stats.foldnorm(c=np.abs(mu/total_sd), loc=0, scale=total_sd)
         mse_mu = dist_chi2.mean()
         mae_mu = dist_folded.mean()
-        # mse_mu = self.sigma2_u + l2_beta_err
-        # mae_mu = np.sqrt( (self.sigma2_u + l2_beta_err) * (2 / np.pi) )
 
         # Calculate the variance of the residuals
         mse_var = dist_chi2.var()
@@ -190,31 +202,31 @@ class dgp_sparse_yX():
                                     'risk': [mse_mu, mae_mu],
                                     'variance': [mse_var, mae_var]})
         
-        # (iii) Calculate risk conditional on X (optional)
-        self.mse_x_oracle = None
-        self.mae_x_oracle = None
-        if X is not None:
-            self._check_X(X)
-            n_X = len(X)
-            if has_intercept:
-                iX = np.hstack((np.ones([n_X,1]), X))
-            else:
-                iX = X.copy()
-            err_X = beta_err.dot(iX.T.dot(iX)).dot(beta_err)
-            eta_err = iX.dot(beta_err)
-            # (i) Calculate expectations
-            # MSE is residual variance plus 
-            self.mse_x_oracle = self.sigma2_u + err_X / n_X
-            # Calculate the folded normal expectation
-            self.mae_x_oracle = np.sqrt(self.sigma2_u * 2 / np.pi) * np.exp(-eta_err**2/(2*self.sigma2_u)) + eta_err*(1 - 2*norm.cdf(-eta_err / np.sqrt(self.sigma2_u)))
-            self.mae_x_oracle = np.sum(self.mae_x_oracle) / n_X
-            # Append on
-            oracle_x = pd.DataFrame({'conditional': False,
-                                    'metric':['mse', 'mae'],
-                                    'risk': [mse_mu, mae_mu],
-                                    'variance': []})
-            self.oracle = pd.concat(objs = [self.oracle, oracle_x])
-            self.oracle.reset_index(drop=True, inplace=True)            
+        # # (iii) Calculate risk conditional on X (optional)
+        # self.mse_x_oracle = None
+        # self.mae_x_oracle = None
+        # if X is not None:
+        #     self._check_X(X)
+        #     n_X = len(X)
+        #     if has_intercept:
+        #         iX = np.hstack((np.ones([n_X,1]), X))
+        #     else:
+        #         iX = X.copy()
+        #     err_X = beta_err.dot(iX.T.dot(iX)).dot(beta_err)
+        #     eta_err = iX.dot(beta_err)
+        #     # (i) Calculate expectations
+        #     # MSE is residual variance plus 
+        #     self.mse_x_oracle = self.sigma2_u + err_X / n_X
+        #     # Calculate the folded normal expectation
+        #     self.mae_x_oracle = np.sqrt(self.sigma2_u * 2 / np.pi) * np.exp(-eta_err**2/(2*self.sigma2_u)) + eta_err*(1 - 2*norm.cdf(-eta_err / np.sqrt(self.sigma2_u)))
+        #     self.mae_x_oracle = np.sum(self.mae_x_oracle) / n_X
+        #     # Append on
+        #     oracle_x = pd.DataFrame({'conditional': False,
+        #                             'metric':['mse', 'mae'],
+        #                             'risk': [mse_mu, mae_mu],
+        #                             'variance': []})
+        #     self.oracle = pd.concat(objs = [self.oracle, oracle_x])
+        #     self.oracle.reset_index(drop=True, inplace=True)
 
 
 
